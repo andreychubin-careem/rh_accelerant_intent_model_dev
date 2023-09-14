@@ -614,4 +614,4 @@ def get_user_features(date: str, days_back: int = 60, percentile: float = 0.8) -
 
 
 if __name__ == '__main__':
-    print(get_user_features('2023-08-10', 90))
+    print(get_intents('2023-08-10', 90))
