@@ -1,0 +1,11 @@
+pandas~=1.5.2
+tqdm~=4.64.1
+pyhive~=0.6.1
+numpy~=1.23.5
+pandarallel~=1.6.4
+scikit-learn~=1.2.0
+catboost~=1.0.6
+matplotlib~=3.6.2
+seaborn~=0.12.2
+shap~=0.42.1
+optuna~=3.1.0
