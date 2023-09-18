@@ -11,7 +11,8 @@ try:
         encode_cyclical_time,
         fill_service_area_id,
         melt_stats,
-        get_last_ride
+        get_last_ride,
+        convert_timestamp
     )
     from .filters import filter_invalid_locations, filter_invalid_service_area_id
 except ImportError:
@@ -22,7 +23,8 @@ except ImportError:
         encode_cyclical_time,
         fill_service_area_id,
         melt_stats,
-        get_last_ride
+        get_last_ride,
+        convert_timestamp
     )
     from filters import filter_invalid_locations, filter_invalid_service_area_id
 
@@ -64,8 +66,7 @@ def read_data(
         del features, sessions
 
         sub['rh'] = (sub['booking_id'] != 0).astype(int)
-        sub['ts'] = pd.to_datetime(sub['ts'].apply(lambda x: x.split('.')[0]))
-
+        sub = convert_timestamp(sub)
         sub = preprocess_locations(sub)
 
         for col in ['week_stats', 'hour_stats']:
@@ -76,6 +77,7 @@ def read_data(
 
         sub['rh_frac'] = sub['num_trips'] / sub['trx_amt']
         sub['known_loc_occ'] = sub['known_loc_occ'] / sub['num_trips']
+        sub = sub.drop(['num_trips', 'trx_amt'], axis=1)
         sub['is_freq'] = sub['is_freq'].fillna(0).astype(int)
 
         if melt_dicts:
@@ -98,12 +100,14 @@ def read_data(
         .drop_duplicates(subset=['sessionuuid'], keep='first')
 
     frame = pd.concat([rh_frame, sa_frame], ignore_index=True).sort_values('ts')
+    del rh_frame, sa_frame
     _ = gc.collect()
 
     print('Filling missing "service_area_id"...')
     frame = fill_service_area_id(frame)
     frame = filter_invalid_service_area_id(frame)
     frame = filter_invalid_locations(frame)
+    frame = frame.drop(['country_name', 'service_area_id'], axis=1)
 
     if add_last_trip:
         frame = get_last_ride(frame)

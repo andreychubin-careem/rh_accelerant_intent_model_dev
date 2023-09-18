@@ -104,13 +104,7 @@ def get_intents(date: str, days_back: int = 60, percentile: float = 0.8) -> str:
             from (
                 select
                     sessionuuid,
-                    case when country_name = 'United Arab Emirates' then at_timezone(
-                            cast(from_unixtime(cast(timestamp as bigint)/1000) as timestamp), 'Asia/Dubai'
-                        )
-                    when country_name = 'Jordan' then at_timezone(
-                            cast(from_unixtime(cast(timestamp as bigint)/1000) as timestamp), 'Asia/Amman'
-                        )
-                    else null end as ts,
+                    cast(timestamp as bigint)/1000 as ts,
                     cast(userid as integer) as customer_id,
                     cast(cast(booking_id as decimal(38, 1)) as bigint) as booking_id,
                     latitude,
@@ -136,13 +130,7 @@ def get_intents(date: str, days_back: int = 60, percentile: float = 0.8) -> str:
 
                 select
                     sessionuuid,
-                    case when country_name = 'United Arab Emirates' then at_timezone(
-                            cast(from_unixtime(cast(timestamp as bigint)/1000) as timestamp), 'Asia/Dubai'
-                        )
-                    when country_name = 'Jordan' then at_timezone(
-                            cast(from_unixtime(cast(timestamp as bigint)/1000) as timestamp), 'Asia/Amman'
-                        )
-                    else null end as ts,
+                    cast(timestamp as bigint)/1000 as ts,
                     cast(userid as integer) as customer_id,
                     cast(cast(booking_id as decimal(38, 1)) as bigint) as booking_id,
                     latitude,
@@ -179,13 +167,7 @@ def get_intents(date: str, days_back: int = 60, percentile: float = 0.8) -> str:
                 round(cast(longitude as decimal(38, 4)), 3) as longitude
             from (
                 select
-                    case when country_name = 'United Arab Emirates' then at_timezone(
-                            cast(from_unixtime(cast(timestamp as bigint)/1000) as timestamp), 'Asia/Dubai'
-                        )
-                    when country_name = 'Jordan' then at_timezone(
-                            cast(from_unixtime(cast(timestamp as bigint)/1000) as timestamp), 'Asia/Amman'
-                        )
-                    else null end as ts,
+                    cast(timestamp as bigint)/1000 as ts,
                     cast(userid as integer) as customer_id,
                     sessionuuid,
                     event_source,
@@ -211,13 +193,7 @@ def get_intents(date: str, days_back: int = 60, percentile: float = 0.8) -> str:
                 union all
 
                 select
-                    case when country_name = 'United Arab Emirates' then at_timezone(
-                            cast(from_unixtime(cast(timestamp as bigint)/1000) as timestamp), 'Asia/Dubai'
-                        )
-                    when country_name = 'Jordan' then at_timezone(
-                            cast(from_unixtime(cast(timestamp as bigint)/1000) as timestamp), 'Asia/Amman'
-                        )
-                    else null end as ts,
+                    cast(timestamp as bigint)/1000 as ts,
                     cast(userid as integer) as customer_id,
                     sessionuuid,
                     event_source,

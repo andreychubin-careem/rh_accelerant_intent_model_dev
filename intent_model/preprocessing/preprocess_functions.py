@@ -2,14 +2,32 @@ import math
 import json
 import numpy as np
 import pandas as pd
+import pytz
 
-from datetime import datetime
+from datetime import datetime as dt
 from typing import Optional, Tuple
 from pandarallel import pandarallel
 from sklearn.preprocessing import normalize
 
 
 pandarallel.initialize(progress_bar=False)
+
+
+def timezones_conversion(row: pd.Series) -> Optional[dt]:
+    if row['country_name'] == 'United Arab Emirates':
+        return row['ts'].tz_convert(tz='Asia/Dubai')
+    elif row['country_name'] == 'Jordan':
+        return row['ts'].tz_convert(tz='Asia/Amman')
+    else:
+        return np.nan
+
+
+def convert_timestamp(data: pd.DataFrame, time_column: str = 'ts') -> pd.DataFrame:
+    data[time_column] = pd.to_datetime(data[time_column], unit='s', utc=True)
+    data[time_column] = data.parallel_apply(timezones_conversion, axis=1)
+    data = data.dropna(subset=['ts'])
+    data[time_column] = pd.to_datetime(data.ts.astype(str).parallel_apply(lambda x: x.split('+')[0]))
+    return data
 
 
 def distance_known_location(row: pd.Series) -> Tuple[float, int]:
@@ -102,7 +120,7 @@ def encode_cyclical_time(data: pd.DataFrame, col: str, max_val: int) -> pd.DataF
 def minute_cyclical(data: pd.DataFrame) -> pd.DataFrame:
     assert 'ts' in data.columns, 'Time column should be named "ts"'
     data['minutes'] = data['ts'].astype(str).parallel_apply(
-        lambda x: (datetime.strptime(x.split(' ')[1], '%H:%M:%S') - datetime.strptime('00:00:00', '%H:%M:%S')).seconds
+        lambda x: (dt.strptime(x.split(' ')[1], '%H:%M:%S') - dt.strptime('00:00:00', '%H:%M:%S')).seconds
     ) // 60
     return encode_cyclical_time(data, 'minutes', 60*24)
 
