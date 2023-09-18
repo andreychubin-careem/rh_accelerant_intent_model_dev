@@ -2,7 +2,6 @@ import math
 import json
 import numpy as np
 import pandas as pd
-import pytz
 
 from datetime import datetime as dt
 from typing import Optional, Tuple
@@ -13,7 +12,7 @@ from sklearn.preprocessing import normalize
 pandarallel.initialize(progress_bar=False)
 
 
-def timezones_conversion(row: pd.Series) -> Optional[dt]:
+def timezones_conversion(row: pd.Series) -> Optional[pd.Timestamp]:
     if row['country_name'] == 'United Arab Emirates':
         return row['ts'].tz_convert(tz='Asia/Dubai')
     elif row['country_name'] == 'Jordan':
