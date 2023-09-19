@@ -87,7 +87,7 @@ def _distance_known_location(row: dict, locations: dict) -> Tuple[float, int]:
                 min_d = dist
                 ind = i
 
-    return min_d * 100, v[ind]
+    return min_d, v[ind]
 
 
 def _most_freq_dist(row: dict, locations: dict) -> float:
