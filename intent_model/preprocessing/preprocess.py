@@ -1,5 +1,4 @@
 import os
-import gc
 import pyarrow.parquet as pq
 import polars as pl
 import pandas as pd
@@ -69,7 +68,6 @@ def read_data(
             features = features.drop('__index_level_0__')
 
         sub = sessions.join(features, on=['valid_date', 'customer_id'], how='inner')
-        del features, sessions
 
         for col in ['week_stats', 'hour_stats']:
             sub = dict_stats_to_norm_cols(sub, col=col, prefix=col.split('_')[0])
@@ -83,7 +81,6 @@ def read_data(
             sub = melt_stats(sub)
 
         df.append(sub)
-        _ = gc.collect()
 
     frame = pl.concat(df, how='vertical')
 
@@ -99,12 +96,6 @@ def read_data(
         .unique(subset=['sessionuuid'], keep='first')
 
     frame = pl.concat([rh_frame, sa_frame], how='vertical').sort(by=['ts'])
-    del rh_frame, sa_frame
-    _ = gc.collect()
-
-    print('Filling missing "service_area_id"...')
-    frame = filter_invalid_service_area_id(frame)
-    frame = filter_invalid_locations(frame)
     frame = frame.drop(['country_name', 'service_area_id'])
 
     print('Done.')
