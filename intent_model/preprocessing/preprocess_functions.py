@@ -1,44 +1,84 @@
-import math
 import json
+import math
 import numpy as np
-import pandas as pd
+import polars as pl
 
-from datetime import datetime as dt
-from typing import Optional, Tuple
-from pandarallel import pandarallel
+from typing import Tuple
+from datetime import datetime
 from sklearn.preprocessing import normalize
 
-
-pandarallel.initialize(progress_bar=False)
-
-
-def timezones_conversion(row: pd.Series) -> Optional[pd.Timestamp]:
-    if row['country_name'] == 'United Arab Emirates':
-        return row['ts'].tz_convert(tz='Asia/Dubai')
-    elif row['country_name'] == 'Jordan':
-        return row['ts'].tz_convert(tz='Asia/Amman')
-    else:
-        return np.nan
+try:
+    from ._utils import TZ_DICT
+except ImportError:
+    from _utils import TZ_DICT
 
 
-def convert_timestamp(data: pd.DataFrame, time_column: str = 'ts') -> pd.DataFrame:
-    data[time_column] = pd.to_datetime(data[time_column], unit='s', utc=True)
-    data[time_column] = data.parallel_apply(timezones_conversion, axis=1)
-    data = data.dropna(subset=['ts'])
-    data[time_column] = pd.to_datetime(data.ts.astype(str).parallel_apply(lambda x: x.split('+')[0]))
+def dict_stats_to_norm_cols(data: pl.DataFrame, col: str, prefix: str) -> pl.DataFrame:
+    data = data.with_columns(pl.col(col).str.json_extract())
+    df = pl.from_dicts(data[col].to_list()).fill_null(0)
+    df = pl.DataFrame(
+        data=normalize(df.to_numpy()),
+        schema={f'norm_{prefix}:{col}': pl.Float64 for col, _ in df.schema.items()}
+    )
+    return pl.concat([data, df], how='horizontal').drop(col)
+
+
+def _encode_cyclical_time(data: pl.DataFrame, col: str, max_val: int) -> pl.DataFrame:
+    data = data.with_columns(
+        pl.col(col).map_elements(
+            lambda x: {
+                col+'_sin': np.sin(2 * np.pi * x/max_val),
+                col+'_cos': np.cos(2 * np.pi * x/max_val)
+            }
+        ).alias("result")
+    ).unnest("result")
+    return data.drop("col")
+
+
+def _minute_cyclical(data: pl.DataFrame) -> pl.DataFrame:
+    data = data.with_columns(pl.col('ts').cast(str).str.split(' ').map_elements(
+        lambda x: (datetime.strptime(x[1].split('.')[0], '%H:%M:%S') - datetime.strptime('00:00:00', '%H:%M:%S')).seconds // 60
+    ).alias('minutes'))
+    return _encode_cyclical_time(data, 'minutes', 60*24)
+
+
+def process_time(data: pl.DataFrame) -> pl.DataFrame:
+    assert 'ts' in data.columns, 'Time column should be named "ts"'
+    data = data.with_columns(pl.from_epoch("ts", time_unit="s").dt.replace_time_zone("UTC"))
+    data = data.with_columns(pl.col('country_name').map_elements(lambda x: TZ_DICT.get(x, None)).alias('tz'))
+    data = data.drop_nulls(subset=['tz'])
+
+    pl_data = []
+
+    for tz in data['tz'].unique().to_numpy().flatten():
+        pl_data.append(data.filter(pl.col('tz') == tz).with_columns(
+            pl.col('ts').dt.convert_time_zone(tz).dt.replace_time_zone(None)))
+
+    data = pl.concat(pl_data, how='vertical').drop('tz')
+    data = data.with_columns(pl.col('ts').dt.hour().alias('hour'))
+    data = data.with_columns(pl.col('ts').dt.weekday().alias('weekday'))
+    data = _minute_cyclical(data)
+
     return data
 
 
-def distance_known_location(row: pd.Series) -> Tuple[float, int]:
-    p1 = row['latitude'], row['longitude']
-    p2s = [(float(x.split('|')[0]), float(x.split('|')[1])) for x in row['locations'].keys()]
-    v = list(row['locations'].values())
+def _is_from_freq(row: dict, locations: dict) -> int:
+    if row['dropoff_lat'] == 0 or row['dropoff_long'] == 0:
+        return 0
+    else:
+        freq_loc = [(float(x.split('|')[0]), float(x.split('|')[1])) for x in locations.keys()]
+        return int((row['dropoff_lat'], row['dropoff_long']) in freq_loc)
+
+
+def _distance_known_location(row: dict, locations: dict) -> Tuple[float, int]:
+    p2s = [(float(x.split('|')[0]), float(x.split('|')[1])) for x in locations.keys()]
+    v = list(locations.values())
 
     min_d = None
     ind = None
 
     for i, p2 in enumerate(p2s):
-        dist = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        dist = math.hypot(p2[0] - row['latitude'], p2[1] - row['longitude'])
         if min_d is None:
             min_d = dist
             ind = i
@@ -47,117 +87,48 @@ def distance_known_location(row: pd.Series) -> Tuple[float, int]:
                 min_d = dist
                 ind = i
 
-    return min_d, v[ind]
+    return min_d * 100, v[ind]
 
 
-def is_from_freq(row: pd.Series) -> Optional[bool]:
-    if np.isnan(row['dropoff_lat']) or np.isnan(row['dropoff_long']):
-        return np.nan
-    else:
-        coord = (round(row['dropoff_lat'], 3), round(row['dropoff_long'], 3))
-        freq_loc = [(float(x.split('|')[0]), float(x.split('|')[1])) for x in row['locations'].keys()]
-        return coord in freq_loc
-
-
-def most_freq_dist(row: pd.Series) -> (float, float):
-    lat = round(row['latitude'], 3)
-    long = round(row['longitude'], 3)
-
+def _most_freq_dist(row: dict, locations: dict) -> float:
     freq = sorted(
-        [((float(k.split('|')[0]), float(k.split('|')[1])), v) for k, v in row['locations'].items()],
+        [((float(k.split('|')[0]), float(k.split('|')[1])), v) for k, v in locations.items()],
         key=lambda x: x[1],
         reverse=True
     )
 
-    return math.hypot(freq[0][0][0] - lat, freq[0][0][1] - long)
+    return math.hypot(freq[0][0][0] - row['latitude'], freq[0][0][1] - row['longitude'])
 
 
-def preprocess_locations(data: pd.DataFrame) -> pd.DataFrame:
-    data['locations'] = data['locations'].parallel_apply(json.loads)
-    data = data.dropna(subset='locations')
-    data['min_dist_to_known_loc'], data['known_loc_occ'] = zip(*data.parallel_apply(distance_known_location, axis=1))
-    data['is_freq'] = data.parallel_apply(is_from_freq, axis=1)
-    data['dist_to_most_freq'] = data.parallel_apply(most_freq_dist, axis=1)
-    return data.drop(['locations', 'dropoff_lat', 'dropoff_long'], axis=1)
+def _get_locations_features(row: dict) -> dict:
+    locations = json.loads(row['locations'])
+    min_d, v = _distance_known_location(row, locations)
+    return {
+        'min_dist_to_known_loc': min_d,
+        'known_loc_occ': v,
+        'is_freq': _is_from_freq(row, locations),
+        'dist_to_most_freq': _most_freq_dist(row, locations)
+    }
 
 
-def dict_stats_to_cols(data: pd.DataFrame, col: str, prefix: str, include_norm: bool) -> pd.DataFrame:
-    data[col] = data[col].parallel_apply(json.loads)
-    data = data.dropna(subset=col)
+def process_locations(data: pl.DataFrame) -> pl.DataFrame:
+    data = data.with_columns(pl.col('dropoff_lat').fill_null(0.0)) \
+        .with_columns(pl.col('dropoff_long').fill_null(0.0))
 
-    data[col] = data[col].parallel_apply(lambda x: {f'{prefix}:{k}': v for k, v in x.items()})
-    df = data[col].parallel_apply(pd.Series).fillna(0)
+    for loc_col in ['latitude', 'longitude', 'dropoff_lat', 'dropoff_long']:
+        data = data.with_columns(pl.col(loc_col).cast(pl.Float64).round(3))
 
-    if include_norm:
-        df = pd.DataFrame(data=normalize(df.values), columns=[f'norm_{x}' for x in df.columns])
-    else:
-        df = pd.DataFrame(data=df.values, columns=df.columns)
-
-    return pd.concat([data.drop(col, axis=1).reset_index(drop=True), df.reset_index(drop=True)], axis=1)
+    data = data.with_columns(pl.struct(pl.all()).map_elements(_get_locations_features).alias("result")).unnest("result")
+    return data.drop(['dropoff_lat', 'dropoff_long', 'locations'])
 
 
-def _case_when(row: pd.Series) -> Tuple[float, float]:
-    hour = row['ts'].hour
-    week = row['ts'].weekday() + 1
-    return row[f'norm_week:{week}'], row[f'norm_hour:{hour}']
-
-
-def melt_stats(data: pd.DataFrame) -> pd.DataFrame:
-    data['norm_week'], data['norm_hour'] = zip(
-        *data.parallel_apply(_case_when, axis=1)
-    )
-    data = data.drop([x for x in data.columns if ':' in x], axis=1)
-    return data
-
-
-def encode_cyclical_time(data: pd.DataFrame, col: str, max_val: int) -> pd.DataFrame:
-    data[col + '_sin'] = np.sin(2 * np.pi * data[col]/max_val)
-    data[col + '_cos'] = np.cos(2 * np.pi * data[col]/max_val)
-    return data.drop(col, axis=1)
-
-
-def minute_cyclical(data: pd.DataFrame) -> pd.DataFrame:
-    assert 'ts' in data.columns, 'Time column should be named "ts"'
-    data['minutes'] = data['ts'].astype(str).parallel_apply(
-        lambda x: (dt.strptime(x.split(' ')[1], '%H:%M:%S') - dt.strptime('00:00:00', '%H:%M:%S')).seconds
-    ) // 60
-    return encode_cyclical_time(data, 'minutes', 60*24)
-
-
-def fill_service_area_id(data: pd.DataFrame) -> pd.DataFrame:
-    frame = data.copy()
-    users = frame[['customer_id', 'service_area_id']].assign(count=1) \
-        .groupby(['customer_id', 'service_area_id'], as_index=False) \
-        .sum() \
-        .sort_values('count', ascending=False) \
-        .drop_duplicates(subset='customer_id', keep='first')
-
-    df = frame[frame.service_area_id.isna()].copy()
-    frame = frame.dropna(subset='service_area_id')
-    df = df.drop('service_area_id', axis=1).merge(users.drop('count', axis=1), on='customer_id', how='left')
-    frame = pd.concat([frame, df]).sort_index()
-    frame = frame.dropna(subset='service_area_id')
-    return frame
-
-
-def get_last_ride(data: pd.DataFrame) -> pd.DataFrame:
-    """not feasible right now"""
-    data = data.reset_index(drop=True)
-    frame = data[data.is_trip_ended == 1][['ts', 'customer_id']].copy()
-    frame['prev_ride_ts'] = frame.sort_values(['customer_id', 'ts']).groupby(by='customer_id')['ts'].shift()
-    frame = frame.dropna(subset='prev_ride_ts')
-
-    data = data.merge(frame, on=['customer_id', 'ts'], how='left').sort_values(['customer_id', 'ts'])
-    data['prev_ride_ts'] = data.groupby(by='customer_id')['prev_ride_ts'].bfill()
-
-    na_data = data[data.prev_ride_ts.isna()].drop('prev_ride_ts', axis=1).copy()
-    data = data[~data.prev_ride_ts.isna()]
-    last_ts = data[['customer_id', 'prev_ride_ts']].groupby(by='customer_id', as_index=False).max()
-    na_data = na_data.merge(last_ts, on='customer_id', how='left')
-    data = pd.concat([data, na_data], ignore_index=True)
-
-    data = data[data.ts > data.prev_ride_ts]
-    data = data.dropna(subset=['prev_ride_ts'])
-    data['last_ride'] = (data['ts'] - data['prev_ride_ts']).dt.seconds / 3600
-
-    return data.drop('prev_ride_ts', axis=1)
+def melt_stats(data: pl.DataFrame) -> pl.DataFrame:
+    data = data.with_columns(
+        pl.struct(pl.all()).map_elements(
+            lambda row: {
+                'norm_week': row[f'norm_week:{row["weekday"]}'],
+                'norm_hour': row[f'norm_hour:{row["hour"]}']
+            }
+        ).alias("result")
+    ).unnest("result")
+    return data.drop([x for x in data.columns if ':' in x] + ['hour'])

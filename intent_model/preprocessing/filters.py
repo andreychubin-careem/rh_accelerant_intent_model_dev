@@ -1,47 +1,27 @@
-import pandas as pd
-from typing import Iterable
+import polars as pl
+
+try:
+    from ._utils import BOUNDS_DICT, VALID_SERVICE_AREA_IDS
+except ImportError:
+    from _utils import BOUNDS_DICT, VALID_SERVICE_AREA_IDS
 
 
-def only_successful_trips(data: pd.DataFrame) -> pd.DataFrame:
-    return data[~((data.is_trip_ended == 0) & (data.rh == 1))]
+def filter_invalid_locations(data: pl.DataFrame) -> pl.DataFrame:
+    pl_data = []
+
+    for country in BOUNDS_DICT.keys():
+        pl_data.append(
+            data.filter(
+                (pl.col('country_name') == country) &
+                (pl.col('latitude') <= BOUNDS_DICT[country][0][1]) &
+                (pl.col('latitude') >= BOUNDS_DICT[country][0][0]) &
+                (pl.col('longitude') <= BOUNDS_DICT[country][1][1]) &
+                (pl.col('longitude') >= BOUNDS_DICT[country][1][0])
+            )
+        )
+
+    return pl.concat(pl_data, how='vertical')
 
 
-def only_successful_freq(data: pd.DataFrame) -> pd.DataFrame:
-    return data[~((data.is_trip_ended == 0) & (data.is_freq == 1))]
-
-
-def drop_bad_users(data: pd.DataFrame, loss_df: pd.DataFrame, threshold: float = 1.0) -> pd.DataFrame:
-    return data[~data.customer_id.isin(loss_df[loss_df.loss > threshold].customer_id)]
-
-
-def remove_linear_dependency(data: pd.DataFrame) -> pd.DataFrame:
-    return data.drop([x for x in data.columns if x[-2:] == ':1'], axis=1)
-
-
-def filter_invalid_locations(data: pd.DataFrame) -> pd.DataFrame:
-    uae_bounds = [(22.5, 27), (52.2, 56.5)]
-    jordan_bounds = [(30, 33), (34, 37)]
-
-    data = (
-        data[
-            ((data.country_name == 'United Arab Emirates') &
-             (data.latitude <= uae_bounds[0][1]) &
-             (data.latitude >= uae_bounds[0][0]) &
-             (data.longitude <= uae_bounds[1][1]) &
-             (data.longitude >= uae_bounds[1][0])) |
-            ((data.country_name == 'Jordan') &
-             (data.latitude <= jordan_bounds[0][1]) &
-             (data.latitude >= jordan_bounds[0][0]) &
-             (data.longitude <= jordan_bounds[1][1]) &
-             (data.longitude >= jordan_bounds[1][0]))
-            ]
-    )
-
-    return data
-
-
-def filter_invalid_service_area_id(
-        data: pd.DataFrame,
-        valid: Iterable[str] = ('1', '21', '64', '68', '111', '87', '49', '47')
-) -> pd.DataFrame:
-    return data[data.service_area_id.isin(valid)]
+def filter_invalid_service_area_id(data: pl.DataFrame) -> pl.DataFrame:
+    return data.filter(pl.col('service_area_id').is_in(VALID_SERVICE_AREA_IDS))

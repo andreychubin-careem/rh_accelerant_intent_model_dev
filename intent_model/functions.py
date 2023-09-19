@@ -14,7 +14,10 @@ def get_conversions(
         model: cb.CatBoostClassifier,
         thresholds: Iterable[float] = (0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
 ) -> pd.DataFrame:
-    scores = model.predict_proba(X)[:, 1]
+    if isinstance(model, cb.CatBoostClassifier):
+        scores = model.predict_proba(X)[:, 1]
+    else:
+        scores = model.predict(X, verbose=0).flatten()
 
     d_dict = {
         'threshold': [],
@@ -37,7 +40,8 @@ def get_conversions(
         d_dict['relevant_sessions'].append(len(sub[(sub.score > t) & (sub.is_freq == 1)]))
         d_dict['sessions_true_pred'].append(len(sub[(sub.score > t) & (sub.correct_preds == 1)]))
         d_dict['relevant_sessions_true_pred'].append(
-            len(sub[(sub.score > t) & (sub.correct_preds == 1) & (sub.is_freq == 1)]))
+            len(sub[(sub.score > t) & (sub.correct_preds == 1) & (sub.is_freq == 1)])
+        )
         d_dict['rh_sessions_true_pred'].append(len(sub[(sub.score > t) & (sub.correct_preds == 1) & (sub.rh == 1)]))
 
     res_df = pd.DataFrame(d_dict)

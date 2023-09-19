@@ -1,40 +1,34 @@
 import os
 import gc
+import pyarrow.parquet as pq
+import polars as pl
 import pandas as pd
+
 from tqdm import tqdm
 
 try:
-    from .preprocess_functions import (
-        preprocess_locations,
-        dict_stats_to_cols,
-        minute_cyclical,
-        encode_cyclical_time,
-        fill_service_area_id,
-        melt_stats,
-        get_last_ride,
-        convert_timestamp
-    )
     from .filters import filter_invalid_locations, filter_invalid_service_area_id
-except ImportError:
-    from preprocess_functions import (
-        preprocess_locations,
-        dict_stats_to_cols,
-        minute_cyclical,
-        encode_cyclical_time,
-        fill_service_area_id,
+    from .preprocess_functions import (
+        process_time,
+        process_locations,
         melt_stats,
-        get_last_ride,
-        convert_timestamp
+        dict_stats_to_norm_cols
     )
+except ImportError:
     from filters import filter_invalid_locations, filter_invalid_service_area_id
+    from preprocess_functions import (
+        process_time,
+        process_locations,
+        melt_stats,
+        dict_stats_to_norm_cols
+    )
 
 
 def read_data(
         path: str,
         min_index: int = None,
         max_index: int = None,
-        melt_dicts: bool = False,
-        add_last_trip: bool = False
+        melt_dicts: bool = False
 ) -> pd.DataFrame:
     features_filenames = sorted([x for x in os.listdir(os.path.join(path, 'features')) if '.pq' in x])
     sessions_filenames = sorted([x for x in os.listdir(os.path.join(path, 'sessions')) if '.pq' in x])
@@ -57,28 +51,33 @@ def read_data(
     ):
         assert f_filename == s_filename, f'Filenames {f_filename} and {s_filename} do not match!'
 
-        features = pd.read_parquet(os.path.join(os.path.join(path, 'features'), f_filename))
-        sessions = pd.read_parquet(os.path.join(os.path.join(path, 'sessions'), s_filename))
+        sessions = pq.read_table(os.path.join(os.path.join(path, 'sessions'), s_filename))
+        sessions = pl.from_arrow(sessions)
 
-        sessions = sessions[sessions.customer_id.isin(features.customer_id)]
-        sub = sessions.merge(features, on=['customer_id', 'valid_date'], how='left')
+        if '__index_level_0__' in sessions.columns:
+            sessions = sessions.drop('__index_level_0__')
 
+        sessions = filter_invalid_service_area_id(sessions)
+        sessions = filter_invalid_locations(sessions)
+        sessions = process_time(sessions)
+        sessions = sessions.with_columns(pl.col('booking_id').ne(0).cast(pl.Int64).alias('rh'))
+
+        features = pq.read_table(os.path.join(os.path.join(path, 'features'), f_filename))
+        features = pl.from_arrow(features)
+
+        if '__index_level_0__' in features.columns:
+            features = features.drop('__index_level_0__')
+
+        sub = sessions.join(features, on=['valid_date', 'customer_id'], how='inner')
         del features, sessions
 
-        sub['rh'] = (sub['booking_id'] != 0).astype(int)
-        sub = convert_timestamp(sub)
-        sub = preprocess_locations(sub)
-
         for col in ['week_stats', 'hour_stats']:
-            sub = dict_stats_to_cols(sub, col, col.replace('_stats', ''), include_norm=True)
+            sub = dict_stats_to_norm_cols(sub, col=col, prefix=col.split('_')[0])
 
-        sub['weekday'] = sub.ts.dt.weekday
-        sub = minute_cyclical(sub)
-
-        sub['rh_frac'] = sub['num_trips'] / sub['trx_amt']
-        sub['known_loc_occ'] = sub['known_loc_occ'] / sub['num_trips']
-        sub = sub.drop(['num_trips', 'trx_amt'], axis=1)
-        sub['is_freq'] = sub['is_freq'].fillna(0).astype(int)
+        sub = process_locations(sub)
+        sub = sub.with_columns((pl.col('num_trips') / (pl.col('trx_amt'))).alias('rh_frac'))
+        sub = sub.with_columns((pl.col('known_loc_occ') / (pl.col('num_trips'))).alias('known_loc_occ'))
+        sub = sub.drop(['num_trips', 'trx_amt'])
 
         if melt_dicts:
             sub = melt_stats(sub)
@@ -86,31 +85,27 @@ def read_data(
         df.append(sub)
         _ = gc.collect()
 
-    frame = pd.concat(df, ignore_index=True)
+    frame = pl.concat(df, how='vertical')
 
     print('Removing duplicated data...')
-    rh_frame = frame[frame.booking_id != 0].copy()
-    sa_frame = frame[frame.booking_id == 0].copy()
+    rh_frame = frame.filter(pl.col('booking_id').ne(0))
+    sa_frame = frame.filter(pl.col('booking_id').eq(0))
 
-    sa_frame = sa_frame[~sa_frame.sessionuuid.isin(rh_frame.sessionuuid)] \
-        .sort_values(['sessionuuid', 'ts']) \
-        .drop_duplicates(subset=['sessionuuid'], keep='first')
+    sa_frame = sa_frame.filter(~pl.col('sessionuuid').is_in(rh_frame['sessionuuid'].to_list())) \
+        .sort(by=['sessionuuid', 'ts']) \
+        .unique(subset=['sessionuuid'], keep='first')
 
-    rh_frame = rh_frame.sort_values(['sessionuuid', 'is_trip_ended', 'ts'], ascending=[True, False, True]) \
-        .drop_duplicates(subset=['sessionuuid'], keep='first')
+    rh_frame = rh_frame.sort(by=['sessionuuid', 'is_trip_ended', 'ts'], descending=[False, True, False]) \
+        .unique(subset=['sessionuuid'], keep='first')
 
-    frame = pd.concat([rh_frame, sa_frame], ignore_index=True).sort_values('ts')
+    frame = pl.concat([rh_frame, sa_frame], how='vertical').sort(by=['ts'])
     del rh_frame, sa_frame
     _ = gc.collect()
 
     print('Filling missing "service_area_id"...')
-    frame = fill_service_area_id(frame)
     frame = filter_invalid_service_area_id(frame)
     frame = filter_invalid_locations(frame)
-    frame = frame.drop(['country_name', 'service_area_id'], axis=1)
-
-    if add_last_trip:
-        frame = get_last_ride(frame)
+    frame = frame.drop(['country_name', 'service_area_id'])
 
     print('Done.')
-    return frame.reset_index(drop=True)
+    return frame.to_pandas()
