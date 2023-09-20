@@ -56,11 +56,6 @@ def read_data(
         if '__index_level_0__' in sessions.columns:
             sessions = sessions.drop('__index_level_0__')
 
-        sessions = filter_invalid_service_area_id(sessions)
-        sessions = filter_invalid_locations(sessions)
-        sessions = process_time(sessions)
-        sessions = sessions.with_columns(pl.col('booking_id').ne(0).cast(pl.Int64).alias('rh'))
-
         features = pq.read_table(os.path.join(os.path.join(path, 'features'), f_filename))
         features = pl.from_arrow(features)
 
@@ -68,17 +63,19 @@ def read_data(
             features = features.drop('__index_level_0__')
 
         sub = sessions.join(features, on=['valid_date', 'customer_id'], how='inner')
+        sub = process_time(sub)
+        sub = sub.with_columns(pl.col('booking_id').ne(0).cast(pl.UInt8).alias('rh'))
 
         for col in ['week_stats', 'hour_stats']:
             sub = dict_stats_to_norm_cols(sub, col=col, prefix=col.split('_')[0])
 
-        sub = process_locations(sub)
-        sub = sub.with_columns((pl.col('num_trips') / (pl.col('trx_amt'))).alias('rh_frac'))
-        sub = sub.with_columns((pl.col('known_loc_occ') / (pl.col('num_trips'))).alias('known_loc_occ'))
-        sub = sub.drop(['num_trips', 'trx_amt'])
-
         if melt_dicts:
             sub = melt_stats(sub)
+
+        sub = process_locations(sub)
+        sub = sub.with_columns((pl.col('num_trips') / pl.col('trx_amt')).alias('rh_frac'))
+        sub = sub.with_columns((pl.col('known_loc_occ') / pl.col('num_trips')).alias('known_loc_occ'))
+        sub = sub.drop(['num_trips', 'trx_amt'])
 
         df.append(sub)
 
@@ -96,6 +93,9 @@ def read_data(
         .unique(subset=['sessionuuid'], keep='first')
 
     frame = pl.concat([rh_frame, sa_frame], how='vertical').sort(by=['ts'])
+
+    frame = filter_invalid_service_area_id(frame)
+    frame = filter_invalid_locations(frame)
     frame = frame.drop(['country_name', 'service_area_id'])
 
     print('Done.')

@@ -32,7 +32,7 @@ def _encode_cyclical_time(data: pl.DataFrame, col: str, max_val: int) -> pl.Data
             }
         ).alias("result")
     ).unnest("result")
-    return data.drop("col")
+    return data.drop(col)
 
 
 def _minute_cyclical(data: pl.DataFrame) -> pl.DataFrame:
@@ -46,11 +46,10 @@ def process_time(data: pl.DataFrame) -> pl.DataFrame:
     assert 'ts' in data.columns, 'Time column should be named "ts"'
     data = data.with_columns(pl.from_epoch("ts", time_unit="s").dt.replace_time_zone("UTC"))
     data = data.with_columns(pl.col('country_name').map_elements(lambda x: TZ_DICT.get(x, None)).alias('tz'))
-    data = data.drop_nulls(subset=['tz'])
 
     pl_data = []
 
-    for tz in data['tz'].unique().to_numpy().flatten():
+    for tz in TZ_DICT.values():
         pl_data.append(data.filter(pl.col('tz') == tz).with_columns(
             pl.col('ts').dt.convert_time_zone(tz).dt.replace_time_zone(None)))
 
@@ -67,7 +66,7 @@ def _is_from_freq(row: dict, locations: dict) -> int:
         return 0
     else:
         freq_loc = [(float(x.split('|')[0]), float(x.split('|')[1])) for x in locations.keys()]
-        return int((row['dropoff_lat'], row['dropoff_long']) in freq_loc)
+        return int((round(row['dropoff_lat'], 3), round(row['dropoff_long'], 3)) in freq_loc)
 
 
 def _distance_known_location(row: dict, locations: dict) -> Tuple[float, int]:
@@ -114,11 +113,11 @@ def _get_locations_features(row: dict) -> dict:
 def process_locations(data: pl.DataFrame) -> pl.DataFrame:
     data = data.with_columns(pl.col('dropoff_lat').fill_null(0.0)) \
         .with_columns(pl.col('dropoff_long').fill_null(0.0))
+    data = data.with_columns(pl.struct(pl.all()).map_elements(_get_locations_features).alias("result")).unnest("result")
 
-    for loc_col in ['latitude', 'longitude', 'dropoff_lat', 'dropoff_long']:
+    for loc_col in ['latitude', 'longitude']:
         data = data.with_columns(pl.col(loc_col).cast(pl.Float64).round(3))
 
-    data = data.with_columns(pl.struct(pl.all()).map_elements(_get_locations_features).alias("result")).unnest("result")
     return data.drop(['dropoff_lat', 'dropoff_long', 'locations'])
 
 
