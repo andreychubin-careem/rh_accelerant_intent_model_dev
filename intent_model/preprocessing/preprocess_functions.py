@@ -66,7 +66,7 @@ def _is_from_freq(row: dict, locations: dict) -> int:
         return 0
     else:
         freq_loc = [(float(x.split('|')[0]), float(x.split('|')[1])) for x in locations.keys()]
-        return int((round(row['dropoff_lat'], 3), round(row['dropoff_long'], 3)) in freq_loc)
+        return int((row['dropoff_lat'], row['dropoff_long']) in freq_loc)
 
 
 def _distance_known_location(row: dict, locations: dict) -> Tuple[float, int]:
@@ -113,10 +113,11 @@ def _get_locations_features(row: dict) -> dict:
 def process_locations(data: pl.DataFrame) -> pl.DataFrame:
     data = data.with_columns(pl.col('dropoff_lat').fill_null(0.0)) \
         .with_columns(pl.col('dropoff_long').fill_null(0.0))
-    data = data.with_columns(pl.struct(pl.all()).map_elements(_get_locations_features).alias("result")).unnest("result")
 
-    for loc_col in ['latitude', 'longitude']:
+    for loc_col in ['latitude', 'longitude', 'dropoff_long', 'locations']:
         data = data.with_columns(pl.col(loc_col).cast(pl.Float64).round(3))
+
+    data = data.with_columns(pl.struct(pl.all()).map_elements(_get_locations_features).alias("result")).unnest("result")
 
     return data.drop(['dropoff_lat', 'dropoff_long', 'locations'])
 
