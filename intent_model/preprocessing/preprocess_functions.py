@@ -54,8 +54,8 @@ def process_time(data: pl.DataFrame) -> pl.DataFrame:
             pl.col('ts').dt.convert_time_zone(tz).dt.replace_time_zone(None)))
 
     data = pl.concat(pl_data, how='vertical').drop('tz')
-    data = data.with_columns(pl.col('ts').dt.hour().alias('hour'))
-    data = data.with_columns(pl.col('ts').dt.weekday().alias('weekday'))
+    data = data.with_columns(pl.col('ts').dt.hour().cast(str).alias('hour'))
+    data = data.with_columns(pl.col('ts').dt.weekday().cast(str).alias('weekday'))
     data = _minute_cyclical(data)
 
     return data
@@ -114,7 +114,7 @@ def process_locations(data: pl.DataFrame) -> pl.DataFrame:
     data = data.with_columns(pl.col('dropoff_lat').fill_null(0.0)) \
         .with_columns(pl.col('dropoff_long').fill_null(0.0))
 
-    for loc_col in ['latitude', 'longitude', 'dropoff_long', 'locations']:
+    for loc_col in ['latitude', 'longitude', 'dropoff_long', 'dropoff_lat']:
         data = data.with_columns(pl.col(loc_col).cast(pl.Float64).round(3))
 
     data = data.with_columns(pl.struct(pl.all()).map_elements(_get_locations_features).alias("result")).unnest("result")

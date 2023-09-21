@@ -64,7 +64,7 @@ def read_data(
 
         sub = sessions.join(features, on=['valid_date', 'customer_id'], how='inner')
         sub = process_time(sub)
-        sub = sub.with_columns(pl.col('booking_id').ne(0).cast(pl.UInt8).alias('rh'))
+        sub = sub.with_columns(pl.col('booking_id').ne(0).cast(pl.Int64).alias('rh'))
 
         for col in ['week_stats', 'hour_stats']:
             sub = dict_stats_to_norm_cols(sub, col=col, prefix=col.split('_')[0])
