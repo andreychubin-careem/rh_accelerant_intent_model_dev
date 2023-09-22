@@ -24,4 +24,9 @@ def filter_invalid_locations(data: pl.DataFrame) -> pl.DataFrame:
 
 
 def filter_invalid_service_area_id(data: pl.DataFrame) -> pl.DataFrame:
-    return data.filter(pl.col('service_area_id').is_in(VALID_SERVICE_AREA_IDS))
+    return data.filter(
+        pl.col('service_area_id')
+        .cast(pl.Int64)
+        .cast(str)
+        .is_in(VALID_SERVICE_AREA_IDS)
+    )

@@ -86,12 +86,12 @@ class PrestoLoader(object):
                     if column in features.columns:
                         features[column] = features[column].apply(json.dumps)
 
-                features.to_parquet(os.path.join(self.features_path, f'{date}.pq'))
+                features.to_parquet(os.path.join(self.features_path, f'{date}.pq'), index=False)
 
             if include_sessions:
                 sessions = self._load_chunk(get_intents(date, self.history_horizon, self.percentile))
                 sessions = self._sessions_clean(sessions)
-                sessions.to_parquet(os.path.join(self.sessions_path, f'{date}.pq'))
+                sessions.to_parquet(os.path.join(self.sessions_path, f'{date}.pq'), index=False)
 
         self.terminate()
         print(f'Data written to {self.features_path} and {self.sessions_path}')

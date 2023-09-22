@@ -53,14 +53,8 @@ def read_data(
         sessions = pq.read_table(os.path.join(os.path.join(path, 'sessions'), s_filename))
         sessions = pl.from_arrow(sessions)
 
-        if '__index_level_0__' in sessions.columns:
-            sessions = sessions.drop('__index_level_0__')
-
         features = pq.read_table(os.path.join(os.path.join(path, 'features'), f_filename))
         features = pl.from_arrow(features)
-
-        if '__index_level_0__' in features.columns:
-            features = features.drop('__index_level_0__')
 
         sub = sessions.join(features, on=['valid_date', 'customer_id'], how='inner')
         sub = process_time(sub)
