@@ -1,14 +1,47 @@
 import os
-import json
+import polars as pl
 import pandas as pd
+from typing import Optional, Callable, Dict
 from tqdm import tqdm
 from pyhive import presto
 
 
 try:
-    from .sql.queries import get_intents, get_user_features
+    from .sql.queries import get_intents, get_rh_features, get_food_features
 except ImportError:
-    from sql.queries import get_intents, get_user_features
+    from sql.queries import get_intents, get_rh_features, get_food_features
+
+
+def clean_sessions(sessions: pl.DataFrame) -> pl.DataFrame:
+    service_sessions = sessions.filter(pl.col('booking_id') != 0)
+    service_sessions_pos = service_sessions.filter(pl.col('is_trip_ended') == 1)
+    service_sessions_neg = service_sessions.filter(pl.col('is_trip_ended') == 0)
+    service_sessions_neg = service_sessions_neg.filter(
+        ~pl.col('sessionuuid').is_in(service_sessions_pos['sessionuuid'].to_list())
+    )
+    service_sessions = pl.concat([service_sessions_pos, service_sessions_neg], how='vertical')
+    service_sessions = service_sessions.sort(['is_trip_ended', 'ts'], descending=[True, False])\
+        .unique(subset=['booking_id'], keep='first')
+
+    sa_sessions = sessions.filter(pl.col('booking_id') == 0)
+    sa_sessions = sa_sessions.filter(
+        ~pl.col('sessionuuid').is_in(service_sessions['sessionuuid'].to_list())
+    )
+    sa_sessions = sa_sessions.sort('ts', descending=False)\
+        .unique(subset=['customer_id', 'sessionuuid'], keep='first')
+
+    sessions = pl.concat([service_sessions, sa_sessions], how='vertical')
+    sessions = sessions.with_columns(pl.col('latitude').cast(pl.Float64)) \
+        .with_columns(pl.col('longitude').cast(pl.Float64))
+    return sessions.sort('ts', descending=False)
+
+
+class TargetService(object):
+    def __init__(self, RH: Optional[Dict[str, Callable]] = None, FOOD: Optional[Dict[str, Callable]] = None):
+        if RH is None:
+            self.RH = {'features': get_rh_features, 'intents': get_intents}
+        if FOOD is None:
+            self.FOOD = {'features': get_food_features, 'intents': get_intents}
 
 
 class PrestoLoader(object):
@@ -16,12 +49,17 @@ class PrestoLoader(object):
             self,
             up_to_date: str,
             days_back: int,
+            service: Optional[dict] = None,
             history_horizon: int = 60,
             percentile: float = 0.8,
             path: str = 'data'
     ):
+        if service is None:
+            service = TargetService().RH
+
         self.up_to_date = up_to_date
         self.days_back = days_back
+        self.service = service
         self.history_horizon = history_horizon
         self.percentile = percentile
         self.conn = None
@@ -45,31 +83,12 @@ class PrestoLoader(object):
             port=8080
         )
 
-    def _load_chunk(self, query: str) -> pd.DataFrame:
+    def _load_chunk(self, query: str) -> pl.DataFrame:
         try:
-            return pd.read_sql(sql=query, con=self.conn)
+            return pl.read_database(query=query, connection=self.conn)
         except presto.DatabaseError:
             self._initiate()
-            return pd.read_sql(sql=query, con=self.conn)
-
-    @staticmethod
-    def _sessions_clean(sessions: pd.DataFrame) -> pd.DataFrame:
-        rh_sessions = sessions[sessions.booking_id != 0].copy()
-        rh_sessions_pos = rh_sessions[rh_sessions.is_trip_ended == 1].copy()
-        rh_sessions_neg = rh_sessions[rh_sessions.is_trip_ended == 0].copy()
-        rh_sessions_neg = rh_sessions_neg[~rh_sessions_neg.sessionuuid.isin(rh_sessions_pos.sessionuuid)]
-        rh_sessions = pd.concat([rh_sessions_pos, rh_sessions_neg])
-        rh_sessions = rh_sessions.sort_values(['is_trip_ended', 'ts'], ascending=[False, True])\
-            .drop_duplicates(subset=['booking_id'], keep='first')
-
-        sa_sessions = sessions[sessions.booking_id == 0].copy()
-        sa_sessions = sa_sessions[~sa_sessions.sessionuuid.isin(rh_sessions.sessionuuid)]
-        sa_sessions = sa_sessions.sort_values('ts').drop_duplicates(subset=['customer_id', 'sessionuuid'], keep='first')
-
-        sessions = pd.concat([rh_sessions, sa_sessions], ignore_index=True)
-        sessions['latitude'] = sessions['latitude'].astype(float)
-        sessions['longitude'] = sessions['longitude'].astype(float)
-        return sessions.sort_values('ts')
+            return pl.read_database(query=query, connection=self.conn)
 
     def terminate(self) -> None:
         self.conn.close()
@@ -80,18 +99,15 @@ class PrestoLoader(object):
 
         for date in tqdm(dates):
             if include_features:
+                get_user_features = self.service['features']
                 features = self._load_chunk(get_user_features(date, self.history_horizon, self.percentile))
-
-                for column in ['week_stats', 'week_stats_recom', 'hour_stats', 'hour_stats_recom', 'locations']:
-                    if column in features.columns:
-                        features[column] = features[column].apply(json.dumps)
-
-                features.to_parquet(os.path.join(self.features_path, f'{date}.pq'), index=False)
+                features.write_parquet(os.path.join(self.features_path, f'{date}.pq'))
 
             if include_sessions:
+                get_intents = self.service['intents']
                 sessions = self._load_chunk(get_intents(date, self.history_horizon, self.percentile))
-                sessions = self._sessions_clean(sessions)
-                sessions.to_parquet(os.path.join(self.sessions_path, f'{date}.pq'), index=False)
+                sessions = clean_sessions(sessions)
+                sessions.write_parquet(os.path.join(self.sessions_path, f'{date}.pq'))
 
         self.terminate()
         print(f'Data written to {self.features_path} and {self.sessions_path}')
